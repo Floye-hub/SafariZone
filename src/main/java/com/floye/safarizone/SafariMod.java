@@ -1,21 +1,39 @@
-package com.floye.safarizone; // Remplacez avec votre package
+package com.floye.safarizone;
 
 import com.floye.safarizone.commands.SafariZoneCommand;
+import com.floye.safarizone.util.SafariZoneManager;
 import net.fabricmc.api.ModInitializer;
 import net.fabricmc.fabric.api.command.v2.CommandRegistrationCallback;
+import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents;
+import net.fabricmc.fabric.api.networking.v1.ServerPlayConnectionEvents;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 public class SafariMod implements ModInitializer {
-	public static final String MOD_ID = "safari-zone-mod"; // ID unique pour votre mod
+	public static final String MOD_ID = "safari-zone-mod";
 	public static final Logger LOGGER = LoggerFactory.getLogger(MOD_ID);
 
 	@Override
 	public void onInitialize() {
+
+		SafariZoneManager.startActivePlayerCheck();
 		// Enregistrement de la commande
 		CommandRegistrationCallback.EVENT.register((dispatcher, registryAccess, environment) -> {
 			SafariZoneCommand.register(dispatcher);
 		});
+
+		// Gestion des événements de déconnexion
+		ServerPlayConnectionEvents.DISCONNECT.register((handler, server) -> {
+			SafariZoneManager.updatePlayerStateOnLogout(handler.getPlayer());
+		});
+
+
+
+		// Gestion des événements de reconnexion
+		ServerPlayConnectionEvents.JOIN.register((handler, sender, server) -> {
+			SafariZoneManager.handlePlayerReconnection(handler.getPlayer());
+		});
+
 		LOGGER.info("Safari Zone Mod initialized!");
 	}
 }
