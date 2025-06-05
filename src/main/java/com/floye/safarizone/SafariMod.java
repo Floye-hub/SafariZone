@@ -1,6 +1,7 @@
 package com.floye.safarizone;
 
 import com.floye.safarizone.commands.SafariZoneCommand;
+import com.floye.safarizone.config.ConfigLoader;
 import com.floye.safarizone.util.SafariZoneManager;
 import net.fabricmc.api.ModInitializer;
 import net.fabricmc.fabric.api.command.v2.CommandRegistrationCallback;
@@ -9,12 +10,17 @@ import net.fabricmc.fabric.api.networking.v1.ServerPlayConnectionEvents;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.Map;
+
 public class SafariMod implements ModInitializer {
 	public static final String MOD_ID = "safari-zone-mod";
 	public static final Logger LOGGER = LoggerFactory.getLogger(MOD_ID);
 
 	@Override
 	public void onInitialize() {
+
+		Map<Integer, SafariZoneManager.SafariZoneData> zones = ConfigLoader.loadConfig("config/SafariZone/safarizone_config.json");
+		SafariZoneManager.setZones(zones);
 
 		SafariZoneManager.startActivePlayerCheck();
 		// Enregistrement de la commande
