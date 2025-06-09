@@ -15,7 +15,7 @@ import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
 public class PlayerStateManager {
-    private static final String FILE_NAME = "player_states.json";
+    private static final String FILE_NAME = "config/SafariZone/player_states.json";
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
     private static final Type TYPE = new TypeToken<Map<UUID, SafariZoneManager.PlayerSafariState>>() {}.getType();
 

@@ -18,7 +18,6 @@ public class SafariZoneCommand {
                             int zoneId = IntegerArgumentType.getInteger(context, "zoneId");
                             ServerCommandSource source = context.getSource();
                             SafariZoneManager.enterSafariZone(source.getPlayer(), zoneId);
-                            source.sendFeedback(() -> Text.literal("Entrée dans la Safari Zone " + zoneId + "!"), true);
                             return 1; // Succès
                         })
                 )

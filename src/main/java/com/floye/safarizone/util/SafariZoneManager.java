@@ -57,9 +57,11 @@ public class SafariZoneManager {
                 if (currentTimeMillis >= state.remainingTimeMillis) {
                     ServerPlayerEntity player = getPlayerById(playerUUID);
                     if (player == null) {
-                        SafariMod.LOGGER.warn("Le joueur avec l'UUID {} n'a pas été trouvé lors de la vérification.", playerUUID);
-                        // Optionnel : supprimer l'état du joueur pour éviter des vérifications futures
-                        playerStates.remove(playerUUID);
+                        SafariMod.LOGGER.info("Le joueur avec l'UUID {} est déconnecté et son temps a expiré. Nettoyage de l'état.", playerUUID);
+                        // Marquer l'état comme expiré pour le gérer à la reconnexion
+                        state.remainingTimeMillis = 0;
+                        // Sauvegarder immédiatement cet état modifié
+                        PlayerStateManager.savePlayerStates(playerStates);
                         return;
                     }
                     SafariZoneData zoneData = safariZones.get(state.zoneId);
@@ -147,22 +149,23 @@ public class SafariZoneManager {
         PlayerSafariState state = playerStates.get(playerUUID);
         if (state != null) {
             state.logoutTimeMillis = System.currentTimeMillis(); // Stocker le temps de déconnexion
-            SafariMod.LOGGER.info("Joueur {} s'est déconnecté", playerUUID);
         } else {
-            SafariMod.LOGGER.info("État du joueur {} non trouvé lors de la déconnexion", playerUUID);
+
         }
     }
 
     public static void handlePlayerReconnection(ServerPlayerEntity player) {
-        SafariMod.LOGGER.info("Joueur {} s'est reconnecté", player.getUuid());
         UUID playerUUID = player.getUuid();
         PlayerSafariState state = playerStates.get(playerUUID);
         if (state == null) {
-            SafariMod.LOGGER.info("État du joueur {} non trouvé", playerUUID);
             return;
         }
-        if (state.logoutTimeMillis == null) {
-            SafariMod.LOGGER.info("Temps de déconnexion du joueur {} non enregistré", playerUUID);
+
+        // Si le temps est déjà à 0, cela signifie que le temps a expiré pendant la déconnexion
+        if (state.remainingTimeMillis <= 0) {
+            player.getServer().execute(() -> {
+                teleportPlayerOutOfSafariZone(player, state);
+            });
             return;
         }
 
@@ -178,7 +181,7 @@ public class SafariZoneManager {
         } else {
             state.remainingTimeMillis = newRemainingTimeMillis;
             long remainingSeconds = state.remainingTimeMillis / 1000;
-            player.sendMessage(Text.literal("Vous êtes toujours dans la Safari Zone. Temps restant : " + remainingSeconds + " secondes."), true);
+            player.sendMessage(Text.literal("Vous êtes toujours dans la Safari Zone."), true);
         }
     }
 
