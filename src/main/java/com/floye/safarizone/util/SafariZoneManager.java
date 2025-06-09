@@ -37,7 +37,6 @@ public class SafariZoneManager {
     private static void startSaveTask() {
         scheduler.scheduleAtFixedRate(() -> {
             PlayerStateManager.savePlayerStates(playerStates);
-            SafariMod.LOGGER.info("État des joueurs sauvegardé");
         }, 5, 5, TimeUnit.MINUTES);
     }
 
@@ -57,7 +56,6 @@ public class SafariZoneManager {
                 if (currentTimeMillis >= state.remainingTimeMillis) {
                     ServerPlayerEntity player = getPlayerById(playerUUID);
                     if (player == null) {
-                        SafariMod.LOGGER.info("Le joueur avec l'UUID {} est déconnecté et son temps a expiré. Nettoyage de l'état.", playerUUID);
                         // Marquer l'état comme expiré pour le gérer à la reconnexion
                         state.remainingTimeMillis = 0;
                         // Sauvegarder immédiatement cet état modifié
@@ -66,20 +64,17 @@ public class SafariZoneManager {
                     }
                     SafariZoneData zoneData = safariZones.get(state.zoneId);
                     if (zoneData == null) {
-                        SafariMod.LOGGER.warn("Les données de la zone {} sont introuvables pour le joueur {}.", state.zoneId, playerUUID);
                         return;
                     }
-                    SafariMod.LOGGER.info("Temps écoulé pour le joueur {} dans la zone {}. Lancement de la téléportation.", playerUUID, state.zoneId);
+
                     player.getServer().execute(() -> {
                         try {
                             // Vérifier si le joueur est toujours dans la zone
                             if (isInSafariZone(player, zoneData)) {
                                 teleportPlayerOutOfSafariZone(player, state);
-                                SafariMod.LOGGER.info("Le joueur {} a été téléporté hors de la Safari Zone.", playerUUID);
                             } else {
                                 player.sendMessage(Text.literal("Votre temps dans la Safari Zone est écoulé."), true);
                                 playerStates.remove(player.getUuid());
-                                SafariMod.LOGGER.info("Le joueur {} n'était plus dans la zone mais message envoyé.", playerUUID);
                             }
                         } catch (Exception e) {
                             SafariMod.LOGGER.error("Erreur lors de la téléportation du joueur {}: ", playerUUID, e);
