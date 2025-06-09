@@ -1,6 +1,7 @@
 package com.floye.safarizone.util;
 
-import com.floye.safarizone.util.EconomyHandler;
+import com.floye.safarizone.SafariMod;
+import com.floye.safarizone.config.PlayerStateManager;
 import net.minecraft.entity.player.PlayerEntity;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.network.ServerPlayerEntity;
@@ -10,6 +11,8 @@ import net.minecraft.util.math.BlockPos;
 
 import java.util.HashMap;
 import java.util.Map;
+import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
@@ -18,52 +21,73 @@ public class SafariZoneManager {
 
     // Map contenant la configuration des zones, initialisée via le ConfigLoader
     private static Map<Integer, SafariZoneData> safariZones = new HashMap<>();
-    // Map pour suivre l'état des joueurs dans une zone
-    private static final Map<String, PlayerSafariState> playerStates = new HashMap<>();
+
+    // Utilisation d'un ConcurrentHashMap avec UUID comme clé pour suivre l'état des joueurs dans une zone
+    private static Map<UUID, PlayerSafariState> playerStates;
+
     private static final ScheduledExecutorService scheduler = Executors.newScheduledThreadPool(1);
     private static MinecraftServer serverInstance;
 
-    /**
-     * Permet d'assigner la configuration des zones lue depuis le JSON.
-     */
+    public static void init() {
+        playerStates = PlayerStateManager.loadPlayerStates();
+        startSaveTask();
+        startActivePlayerCheck();
+    }
+
+    private static void startSaveTask() {
+        scheduler.scheduleAtFixedRate(() -> {
+            PlayerStateManager.savePlayerStates(playerStates);
+            SafariMod.LOGGER.info("État des joueurs sauvegardé");
+        }, 5, 5, TimeUnit.MINUTES);
+    }
+
     public static void setZones(Map<Integer, SafariZoneData> zones) {
         safariZones = zones;
     }
 
-    /**
-     * Définit l'instance du serveur Minecraft.
-     */
     public static void setServerInstance(MinecraftServer server) {
         serverInstance = server;
     }
 
-    /**
-     * Lance une vérification périodique de l'état des joueurs dans les Safari Zones.
-     */
     public static void startActivePlayerCheck() {
         scheduler.scheduleAtFixedRate(() -> {
             long currentTimeMillis = System.currentTimeMillis();
 
-            playerStates.forEach((playerId, state) -> {
+            playerStates.forEach((playerUUID, state) -> {
                 if (currentTimeMillis >= state.remainingTimeMillis) {
-                    ServerPlayerEntity player = getPlayerById(playerId);
-                    if (player != null) {
-                        SafariZoneData zoneData = safariZones.get(state.zoneId);
-                        if (zoneData != null && isInSafariZone(player, zoneData)) {
-                            teleportPlayerOutOfSafariZone(player, state);
-                        } else {
-                            player.sendMessage(Text.literal("Votre temps dans la Safari Zone est écoulé."), true);
-                            playerStates.remove(playerId);
-                        }
+                    ServerPlayerEntity player = getPlayerById(playerUUID);
+                    if (player == null) {
+                        SafariMod.LOGGER.warn("Le joueur avec l'UUID {} n'a pas été trouvé lors de la vérification.", playerUUID);
+                        // Optionnel : supprimer l'état du joueur pour éviter des vérifications futures
+                        playerStates.remove(playerUUID);
+                        return;
                     }
+                    SafariZoneData zoneData = safariZones.get(state.zoneId);
+                    if (zoneData == null) {
+                        SafariMod.LOGGER.warn("Les données de la zone {} sont introuvables pour le joueur {}.", state.zoneId, playerUUID);
+                        return;
+                    }
+                    SafariMod.LOGGER.info("Temps écoulé pour le joueur {} dans la zone {}. Lancement de la téléportation.", playerUUID, state.zoneId);
+                    player.getServer().execute(() -> {
+                        try {
+                            // Vérifier si le joueur est toujours dans la zone
+                            if (isInSafariZone(player, zoneData)) {
+                                teleportPlayerOutOfSafariZone(player, state);
+                                SafariMod.LOGGER.info("Le joueur {} a été téléporté hors de la Safari Zone.", playerUUID);
+                            } else {
+                                player.sendMessage(Text.literal("Votre temps dans la Safari Zone est écoulé."), true);
+                                playerStates.remove(player.getUuid());
+                                SafariMod.LOGGER.info("Le joueur {} n'était plus dans la zone mais message envoyé.", playerUUID);
+                            }
+                        } catch (Exception e) {
+                            SafariMod.LOGGER.error("Erreur lors de la téléportation du joueur {}: ", playerUUID, e);
+                        }
+                    });
                 }
             });
         }, 20, 20, TimeUnit.SECONDS);
     }
 
-    /**
-     * Permet à un joueur d'entrer dans une Safari Zone après vérification de son solde.
-     */
     public static void enterSafariZone(PlayerEntity player, int zoneId) {
         if (!(player instanceof ServerPlayerEntity serverPlayer)) {
             return;
@@ -75,7 +99,6 @@ public class SafariZoneManager {
             return;
         }
 
-        // Vérification asynchrone du compte économie du joueur
         EconomyHandler.getAccount(player.getUuid()).thenAccept(account -> {
             if (account == null) {
                 serverPlayer.sendMessage(Text.literal("Impossible de récupérer votre compte économie."), true);
@@ -94,7 +117,6 @@ public class SafariZoneManager {
                 return;
             }
 
-            // Pour exécuter la téléportation sur le thread principal du serveur
             serverPlayer.getServer().execute(() -> {
                 BlockPos originalPosition = player.getBlockPos();
                 ServerWorld world = (ServerWorld) serverPlayer.getWorld();
@@ -110,48 +132,56 @@ public class SafariZoneManager {
 
                 serverPlayer.sendMessage(Text.literal("Vous êtes entré dans la Safari Zone."), true);
 
-                // Stocker l'état du joueur pour gérer la durée de présence dans la zone
-                playerStates.put(serverPlayer.getUuidAsString(), new PlayerSafariState(
+                playerStates.put(serverPlayer.getUuid(), new PlayerSafariState(
                         originalPosition,
                         zoneId,
                         System.currentTimeMillis() + zoneData.durationMinutes * 60 * 1000
                 ));
+                PlayerStateManager.savePlayerStates(playerStates); // Ajoutez cette ligne
             });
         });
     }
 
-    /**
-     * Met à jour l'état d'un joueur lors de sa déconnexion.
-     */
     public static void updatePlayerStateOnLogout(ServerPlayerEntity player) {
-        String playerId = player.getUuidAsString();
-        PlayerSafariState state = playerStates.get(playerId);
+        UUID playerUUID = player.getUuid();
+        PlayerSafariState state = playerStates.get(playerUUID);
         if (state != null) {
-            long currentTimeMillis = System.currentTimeMillis();
-            state.remainingTimeMillis = Math.max(0, state.remainingTimeMillis - currentTimeMillis);
+            state.logoutTimeMillis = System.currentTimeMillis(); // Stocker le temps de déconnexion
+            SafariMod.LOGGER.info("Joueur {} s'est déconnecté", playerUUID);
+        } else {
+            SafariMod.LOGGER.info("État du joueur {} non trouvé lors de la déconnexion", playerUUID);
         }
     }
 
-    /**
-     * Gère la reconnexion d'un joueur.
-     */
     public static void handlePlayerReconnection(ServerPlayerEntity player) {
-        String playerId = player.getUuidAsString();
-        PlayerSafariState state = playerStates.get(playerId);
-        if (state != null) {
-            long currentTimeMillis = System.currentTimeMillis();
-            if (currentTimeMillis >= state.remainingTimeMillis) {
+        SafariMod.LOGGER.info("Joueur {} s'est reconnecté", player.getUuid());
+        UUID playerUUID = player.getUuid();
+        PlayerSafariState state = playerStates.get(playerUUID);
+        if (state == null) {
+            SafariMod.LOGGER.info("État du joueur {} non trouvé", playerUUID);
+            return;
+        }
+        if (state.logoutTimeMillis == null) {
+            SafariMod.LOGGER.info("Temps de déconnexion du joueur {} non enregistré", playerUUID);
+            return;
+        }
+
+        long currentTimeMillis = System.currentTimeMillis();
+        long timeElapsedSinceLogout = currentTimeMillis - state.logoutTimeMillis;
+        long newRemainingTimeMillis = state.remainingTimeMillis - timeElapsedSinceLogout;
+
+        if (newRemainingTimeMillis <= 0) {
+            state.remainingTimeMillis = 0; // Pour éviter les problèmes de valeur négative
+            player.getServer().execute(() -> {
                 teleportPlayerOutOfSafariZone(player, state);
-            } else {
-                long remainingSeconds = (state.remainingTimeMillis - currentTimeMillis) / 1000;
-                player.sendMessage(Text.literal("Vous êtes toujours dans la Safari Zone. Temps restant : " + remainingSeconds + " secondes."), true);
-            }
+            });
+        } else {
+            state.remainingTimeMillis = newRemainingTimeMillis;
+            long remainingSeconds = state.remainingTimeMillis / 1000;
+            player.sendMessage(Text.literal("Vous êtes toujours dans la Safari Zone. Temps restant : " + remainingSeconds + " secondes."), true);
         }
     }
 
-    /**
-     * Téléporte un joueur hors de la Safari Zone.
-     */
     private static void teleportPlayerOutOfSafariZone(ServerPlayerEntity player, PlayerSafariState state) {
         player.teleport(
                 (ServerWorld) player.getWorld(),
@@ -162,12 +192,9 @@ public class SafariZoneManager {
                 player.getPitch()
         );
         player.sendMessage(Text.literal("Temps de la Safari Zone écoulé. Vous avez été téléporté à votre position initiale."), true);
-        playerStates.remove(player.getUuidAsString());
+        playerStates.remove(player.getUuid());
     }
 
-    /**
-     * Vérifie si le joueur se trouve dans la zone délimitée (les bornes sont configurables via JSON).
-     */
     private static boolean isInSafariZone(ServerPlayerEntity player, SafariZoneData zoneData) {
         BlockPos pos = player.getBlockPos();
         return pos.getX() >= zoneData.bounds.minX &&
@@ -178,37 +205,24 @@ public class SafariZoneManager {
                 pos.getZ() <= zoneData.bounds.maxZ;
     }
 
-    /**
-     * Récupère un joueur connecté par son UUID.
-     */
-    private static ServerPlayerEntity getPlayerById(String playerId) {
+    private static ServerPlayerEntity getPlayerById(UUID playerUUID) {
         if (serverInstance == null) return null;
-        return serverInstance.getPlayerManager().getPlayer(playerId);
+        return serverInstance.getPlayerManager().getPlayer(playerUUID);
     }
 
-    //////////////////////////////////////////////////////////////////////
-    // Classes internes pour contenir les données de zones et états joueurs  //
-    //////////////////////////////////////////////////////////////////////
-
-    /**
-     * Contient les informations d'une Safari Zone (position de spawn, durée, coût et bornes de la zone).
-     */
     public static class SafariZoneData {
         public final BlockPos spawnPosition;
         public final int durationMinutes;
         public final double cost;
         public final Bounds bounds;
 
-        public SafariZoneData(BlockPos spawnPosition, int durationMinutes, double cost, Bounds bounds) {
+        public SafariZoneData(BlockPos spawnPosition, int durationMinutes, double cost, Bounds bounds, String dimensionId) {
             this.spawnPosition = spawnPosition;
             this.durationMinutes = durationMinutes;
             this.cost = cost;
             this.bounds = bounds;
         }
 
-        /**
-         * Représente les bornes de la zone sous la forme de 6 valeurs (min/max pour X, Y et Z).
-         */
         public static class Bounds {
             public final int minX;
             public final int maxX;
@@ -228,13 +242,11 @@ public class SafariZoneManager {
         }
     }
 
-    /**
-     * Stocke l'état d'un joueur en Safari Zone (position initiale, zone, et temps restant).
-     */
     public static class PlayerSafariState {
         public final BlockPos originalPosition;
         public final int zoneId;
         public long remainingTimeMillis;
+        public Long logoutTimeMillis;
 
         public PlayerSafariState(BlockPos originalPosition, int zoneId, long remainingTimeMillis) {
             this.originalPosition = originalPosition;

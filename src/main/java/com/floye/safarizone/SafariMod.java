@@ -18,27 +18,30 @@ public class SafariMod implements ModInitializer {
 
 	@Override
 	public void onInitialize() {
-
+		// Chargement de la configuration et autres initialisations
 		Map<Integer, SafariZoneManager.SafariZoneData> zones = ConfigLoader.loadConfig("config/SafariZone/safarizone_config.json");
 		SafariZoneManager.setZones(zones);
 
+		// Initialisation de l'instance du serveur dès le démarrage
+		ServerLifecycleEvents.SERVER_STARTING.register(server -> {
+			SafariZoneManager.setServerInstance(server);
+			LOGGER.info("Instance du serveur définie pour SafariZoneManager.");
+		});
+		SafariZoneManager.init();
 		SafariZoneManager.startActivePlayerCheck();
+
 		// Enregistrement de la commande
 		CommandRegistrationCallback.EVENT.register((dispatcher, registryAccess, environment) -> {
 			SafariZoneCommand.register(dispatcher);
 		});
 
 		// Gestion des événements de déconnexion
-		ServerPlayConnectionEvents.DISCONNECT.register((handler, server) -> {
-			SafariZoneManager.updatePlayerStateOnLogout(handler.getPlayer());
-		});
-
-
+		ServerPlayConnectionEvents.DISCONNECT.register((handler, server) ->
+				SafariZoneManager.updatePlayerStateOnLogout(handler.getPlayer()));
 
 		// Gestion des événements de reconnexion
-		ServerPlayConnectionEvents.JOIN.register((handler, sender, server) -> {
-			SafariZoneManager.handlePlayerReconnection(handler.getPlayer());
-		});
+		ServerPlayConnectionEvents.JOIN.register((handler, sender, server) ->
+				SafariZoneManager.handlePlayerReconnection(handler.getPlayer()));
 
 		LOGGER.info("Safari Zone Mod initialized!");
 	}

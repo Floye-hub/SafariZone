@@ -42,7 +42,8 @@ public class ConfigLoader {
                     new BlockPos(zone.spawnPosition.x, zone.spawnPosition.y, zone.spawnPosition.z),
                     zone.durationMinutes,
                     zone.cost,
-                    new Bounds(zone.bounds.minX, zone.bounds.maxX, zone.bounds.minY, zone.bounds.maxY, zone.bounds.minZ, zone.bounds.maxZ)
+                    new Bounds(zone.bounds.minX, zone.bounds.maxX, zone.bounds.minY, zone.bounds.maxY, zone.bounds.minZ, zone.bounds.maxZ),
+                    zone.dimensionId
             ));
         }
         return zones;
@@ -68,7 +69,8 @@ public class ConfigLoader {
                 new SpawnPosition(100, 70, 100),
                 1,
                 100.0,
-                new BoundsConfig(90, 110, 65, 75, 90, 110)
+                new BoundsConfig(90, 110, 65, 75, 90, 110),
+                "minecraft:overworld"
         ));
         // Zone par défaut 2
         data.zones.add(new ZoneConfig(
@@ -76,7 +78,17 @@ public class ConfigLoader {
                 new SpawnPosition(-100, 70, -100),
                 20,
                 250.0,
-                new BoundsConfig(-110, -90, 65, 75, -110, -90)
+                new BoundsConfig(-110, -90, 65, 75, -110, -90),
+                "minecraft:the_nether"
+        ));
+        // Zone par défaut 3 (exemple dimension moddée)
+        data.zones.add(new ZoneConfig(
+                3,
+                new SpawnPosition(0, 100, 0),
+                30,
+                500.0,
+                new BoundsConfig(-20, 20, 90, 110, -20, 20),
+                "modid:custom_dimension"
         ));
         return data;
     }
@@ -92,13 +104,15 @@ public class ConfigLoader {
         int durationMinutes;
         double cost;
         BoundsConfig bounds;
+        String dimensionId;
 
-        public ZoneConfig(int id, SpawnPosition spawnPosition, int durationMinutes, double cost, BoundsConfig bounds) {
+        public ZoneConfig(int id, SpawnPosition spawnPosition, int durationMinutes, double cost, BoundsConfig bounds, String dimensionId) {
             this.id = id;
             this.spawnPosition = spawnPosition;
             this.durationMinutes = durationMinutes;
             this.cost = cost;
             this.bounds = bounds;
+            this.dimensionId = dimensionId;
         }
     }
 
