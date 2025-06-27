@@ -65,6 +65,23 @@ public class SafariZoneManager {
         scheduler.scheduleAtFixedRate(() -> {
             try {
                 long now = System.currentTimeMillis();
+                playerStates.forEach((playerId, state) -> {
+                    ServerPlayerEntity player = serverInstance.getPlayerManager().getPlayer(playerId);
+                    if (player != null) {
+                        long remainingMinutes = TimeUnit.MILLISECONDS.toMinutes(state.remainingTimeMillis);
+
+                        if (!state.fiveMinuteWarningSent && remainingMinutes <= 5) {
+                            player.sendMessage(Text.literal("Attention! Il vous reste 5 minutes."), true);
+                            state.fiveMinuteWarningSent = true;
+                        }
+
+                        if (!state.oneMinuteWarningSent && remainingMinutes <= 1) {
+                            player.sendMessage(Text.literal("Attention! Il vous reste 1 minute."), true);
+                            state.oneMinuteWarningSent = true;
+                        }
+                    }
+                });
+
                 playerStates.entrySet().removeIf(entry -> {
                     if (now >= entry.getValue().remainingTimeMillis) {
                         handleExpiredPlayer(entry.getKey(), entry.getValue());
@@ -115,11 +132,14 @@ public class SafariZoneManager {
                         return;
                     }
 
+                    long currentTime = System.currentTimeMillis();
+                    long durationMillis = TimeUnit.MINUTES.toMillis(zone.durationMinutes);
+
                     PlayerSafariState state = new PlayerSafariState(
                             player.getBlockPos(),
                             player.getWorld().getRegistryKey(),
                             zoneId,
-                            System.currentTimeMillis() + TimeUnit.MINUTES.toMillis(zone.durationMinutes)
+                            currentTime + durationMillis
                     );
 
                     playerStates.put(player.getUuid(), state);
@@ -257,6 +277,11 @@ public class SafariZoneManager {
         public final int zoneId;
         public long remainingTimeMillis;
         public Long logoutTimeMillis;
+
+        // Added fields
+        public boolean fiveMinuteWarningSent = false;
+        public boolean oneMinuteWarningSent = false;
+
 
         public PlayerSafariState(BlockPos pos, RegistryKey<World> dim, int zone, long time) {
             this.originalPosition = pos;
