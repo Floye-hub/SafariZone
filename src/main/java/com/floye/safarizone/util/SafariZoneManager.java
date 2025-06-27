@@ -9,291 +9,285 @@ import net.minecraft.server.world.ServerWorld;
 import net.minecraft.text.Text;
 import net.minecraft.util.Identifier;
 import net.minecraft.util.math.BlockPos;
-import net.minecraft.registry.Registry;
 import net.minecraft.registry.RegistryKey;
-import net.minecraft.registry.Registries;
 import net.minecraft.world.World;
 
-import java.util.HashMap;
-import java.util.Map;
-import java.util.UUID;
-import java.util.concurrent.Executors;
-import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.TimeUnit;
-
-
+import java.util.*;
+import java.util.concurrent.*;
 
 public class SafariZoneManager {
-
-    // Map contenant la configuration des zones, initialisée via le ConfigLoader
-    private static Map<Integer, SafariZoneData> safariZones = new HashMap<>();
-
-    // Map pour suivre l'état des joueurs dans une zone
-    private static Map<UUID, PlayerSafariState> playerStates;
-
-    private static final ScheduledExecutorService scheduler = Executors.newScheduledThreadPool(1);
+    private static final Map<Integer, SafariZoneData> safariZones = new ConcurrentHashMap<>();
+    private static final Map<UUID, PlayerSafariState> playerStates = new ConcurrentHashMap<>();
+    private static final ScheduledExecutorService scheduler = Executors.newScheduledThreadPool(2);
     private static MinecraftServer serverInstance;
 
+    /* Initialisation */
     public static void init() {
-        playerStates = PlayerStateManager.loadPlayerStates();
+        playerStates.putAll(PlayerStateManager.loadPlayerStates());
+        cleanInvalidStates();
         startSaveTask();
         startActivePlayerCheck();
+        SafariMod.LOGGER.info("SafariZoneManager initialisé avec {} états joueurs", playerStates.size());
     }
 
+    /* Gestion des états */
+    public static int cleanInvalidStates() {
+        int invalidCount = 0;
+        Iterator<Map.Entry<UUID, PlayerSafariState>> it = playerStates.entrySet().iterator();
+
+        while (it.hasNext()) {
+            Map.Entry<UUID, PlayerSafariState> entry = it.next();
+            if (!entry.getValue().isValid()) {
+                it.remove();
+                invalidCount++;
+                SafariMod.LOGGER.debug("Nettoyage état invalide: {}", entry.getKey());
+            }
+        }
+
+        if (invalidCount > 0) {
+            PlayerStateManager.forceSavePlayerStates();
+        }
+        return invalidCount;
+    }
+
+    /* Tâches planifiées */
     private static void startSaveTask() {
         scheduler.scheduleAtFixedRate(() -> {
-            PlayerStateManager.savePlayerStates(playerStates);
+            try {
+                PlayerStateManager.savePlayerStates(playerStates);
+            } catch (Exception e) {
+                SafariMod.LOGGER.error("Erreur sauvegarde planifiée", e);
+            }
         }, 5, 5, TimeUnit.MINUTES);
     }
 
-    public static void setZones(Map<Integer, SafariZoneData> zones) {
-        safariZones = zones;
-    }
-
-    public static void setServerInstance(MinecraftServer server) {
-        serverInstance = server;
-    }
-
-    public static void startActivePlayerCheck() {
+    private static void startActivePlayerCheck() {
         scheduler.scheduleAtFixedRate(() -> {
-            long currentTimeMillis = System.currentTimeMillis();
-
-            playerStates.forEach((playerUUID, state) -> {
-                if (currentTimeMillis >= state.remainingTimeMillis) {
-                    ServerPlayerEntity player = getPlayerById(playerUUID);
-                    if (player == null) {
-                        // Si le joueur est déconnecté, on marque le temps écoulé
-                        state.remainingTimeMillis = 0;
-                        PlayerStateManager.savePlayerStates(playerStates);
-                        return;
+            try {
+                long now = System.currentTimeMillis();
+                playerStates.entrySet().removeIf(entry -> {
+                    if (now >= entry.getValue().remainingTimeMillis) {
+                        handleExpiredPlayer(entry.getKey(), entry.getValue());
+                        return true;
                     }
-                    SafariZoneData zoneData = safariZones.get(state.zoneId);
-                    if (zoneData == null) {
-                        return;
-                    }
-                    player.getServer().execute(() -> {
-                        try {
-                            if (isInSafariZone(player, zoneData)) {
-                                teleportPlayerOutOfSafariZone(player, state);
-                            } else {
-                                player.sendMessage(Text.literal("Votre temps dans la Safari Zone est écoulé."), true);
-                                playerStates.remove(player.getUuid());
-                            }
-                        } catch (Exception e) {
-                            SafariMod.LOGGER.error("Erreur lors de la téléportation du joueur {}: ", playerUUID, e);
-                        }
-                    });
-                }
-            });
-        }, 20, 20, TimeUnit.SECONDS);
+                    return false;
+                });
+            } catch (Exception e) {
+                SafariMod.LOGGER.error("Erreur vérification joueurs", e);
+            }
+        }, 10, 10, TimeUnit.SECONDS);
     }
 
-    public static void enterSafariZone(PlayerEntity player, int zoneId) {
-        if (!(player instanceof ServerPlayerEntity serverPlayer)) {
-            return;
-        }
+    private static void handleExpiredPlayer(UUID playerId, PlayerSafariState state) {
+        serverInstance.execute(() -> {
+            ServerPlayerEntity player = serverInstance.getPlayerManager().getPlayer(playerId);
+            if (player != null) {
+                teleportPlayerOutOfSafariZone(player, state);
+            }
+        });
+    }
 
-        SafariZoneData zoneData = safariZones.get(zoneId);
-        if (zoneData == null) {
-            player.sendMessage(Text.literal("Safari Zone " + zoneId + " non trouvée."), true);
+    /* Gestion des joueurs */
+    public static void enterSafariZone(PlayerEntity player, int zoneId) {
+        if (!(player instanceof ServerPlayerEntity serverPlayer)) return;
+
+        SafariZoneData zone = safariZones.get(zoneId);
+        if (zone == null) {
+            player.sendMessage(Text.literal("Zone invalide"), false);
             return;
         }
 
         EconomyHandler.getAccount(player.getUuid()).thenAccept(account -> {
-            if (account == null) {
-                serverPlayer.sendMessage(Text.literal("Impossible de récupérer votre compte économie."), true);
+            if (account == null || !EconomyHandler.remove(account, zone.cost)) {
+                serverPlayer.sendMessage(Text.literal("Erreur paiement"), false);
                 return;
             }
 
-            double balance = EconomyHandler.getBalance(account);
-            if (balance < zoneData.cost) {
-                serverPlayer.sendMessage(Text.literal("Solde insuffisant pour accéder à la Safari Zone. Nécessaire: " + zoneData.cost), true);
-                return;
-            }
+            serverInstance.execute(() -> {
+                try {
+                    ServerWorld safariWorld = serverInstance.getWorld(
+                            RegistryKey.of(RegistryKey.ofRegistry(Identifier.of("minecraft", "dimension")),
+                                    Identifier.of(zone.dimensionId)
+                            ));
 
-            boolean withdrawn = EconomyHandler.remove(account, zoneData.cost);
-            if (!withdrawn) {
-                serverPlayer.sendMessage(Text.literal("Erreur lors du retrait de fonds pour accéder à la Safari Zone."), true);
-                return;
-            }
+                    if (safariWorld == null) {
+                        serverPlayer.sendMessage(Text.literal("Dimension introuvable"), false);
+                        return;
+                    }
 
-            serverPlayer.getServer().execute(() -> {
-                BlockPos originalPosition = player.getBlockPos();
-                RegistryKey<World> originalDimension = serverPlayer.getWorld().getRegistryKey(); // Sauvegarde de la dimension actuelle
+                    PlayerSafariState state = new PlayerSafariState(
+                            player.getBlockPos(),
+                            player.getWorld().getRegistryKey(),
+                            zoneId,
+                            System.currentTimeMillis() + TimeUnit.MINUTES.toMillis(zone.durationMinutes)
+                    );
 
-                // Création du RegistryKey pour la dimension Safari Zone
-                RegistryKey<World> dimensionKey = RegistryKey.of(
-                        net.minecraft.registry.RegistryKeys.WORLD, // Correct pour Fabric 1.21.1
-                        Identifier.of(zoneData.dimensionId)
-                );
-
-                // Récupération de la dimension Safari Zone
-                ServerWorld safariWorld = serverPlayer.getServer().getWorld(dimensionKey);
-
-                if (safariWorld != null) {
-                    // Téléportation dans la dimension Safari Zone
+                    playerStates.put(player.getUuid(), state);
                     serverPlayer.teleport(
                             safariWorld,
-                            zoneData.spawnPosition.getX() + 0.5,
-                            zoneData.spawnPosition.getY(),
-                            zoneData.spawnPosition.getZ() + 0.5,
+                            zone.spawnPosition.getX() + 0.5,
+                            zone.spawnPosition.getY(),
+                            zone.spawnPosition.getZ() + 0.5,
                             player.getYaw(),
                             player.getPitch()
                     );
-
-                    serverPlayer.sendMessage(Text.literal("Vous êtes entré dans la Safari Zone."), true);
-
-                    // Sauvegarde de l'état du joueur, y compris la dimension d'origine
-                    playerStates.put(serverPlayer.getUuid(), new PlayerSafariState(
-                            originalPosition,
-                            originalDimension, // Sauvegarde de la dimension d'origine
-                            zoneId,
-                            System.currentTimeMillis() + zoneData.durationMinutes * 60 * 1000
-                    ));
-                    PlayerStateManager.savePlayerStates(playerStates);
-                } else {
-                    serverPlayer.sendMessage(Text.literal("La dimension spécifiée pour la Safari Zone n'existe pas."), true);
+                    PlayerStateManager.forceSavePlayerStates();
+                } catch (Exception e) {
+                    SafariMod.LOGGER.error("Erreur entrée SafariZone", e);
                 }
             });
         });
     }
 
     public static void updatePlayerStateOnLogout(ServerPlayerEntity player) {
-        UUID playerUUID = player.getUuid();
-        PlayerSafariState state = playerStates.get(playerUUID);
+        PlayerSafariState state = playerStates.get(player.getUuid());
         if (state != null) {
-            state.logoutTimeMillis = System.currentTimeMillis(); // Stocker le temps de déconnexion
+            state.logoutTimeMillis = System.currentTimeMillis();
+            PlayerStateManager.forceSavePlayerStates();
         }
     }
 
     public static void handlePlayerReconnection(ServerPlayerEntity player) {
-        UUID playerUUID = player.getUuid();
-        PlayerSafariState state = playerStates.get(playerUUID);
-        if (state == null) {
+        PlayerSafariState state = playerStates.get(player.getUuid());
+        if (state == null) return;
+
+        if (!state.isValid()) {
+            playerStates.remove(player.getUuid());
             return;
         }
 
-        if (state.remainingTimeMillis <= 0) {
-            player.getServer().execute(() -> teleportPlayerOutOfSafariZone(player, state));
-            return;
-        }
+        serverInstance.execute(() -> {
+            try {
+                if (state.remainingTimeMillis <= 0) {
+                    teleportPlayerOutOfSafariZone(player, state);
+                    return;
+                }
 
-        long currentTimeMillis = System.currentTimeMillis();
-        long timeElapsedSinceLogout = currentTimeMillis - state.logoutTimeMillis;
-        long newRemainingTimeMillis = state.remainingTimeMillis - timeElapsedSinceLogout;
+                if (state.logoutTimeMillis != null) {
+                    long remaining = state.remainingTimeMillis -
+                            (System.currentTimeMillis() - state.logoutTimeMillis);
+                    state.remainingTimeMillis = Math.max(0, remaining);
+                }
 
-        if (newRemainingTimeMillis <= 0) {
-            state.remainingTimeMillis = 0;
-            player.getServer().execute(() -> teleportPlayerOutOfSafariZone(player, state));
-        } else {
-            state.remainingTimeMillis = newRemainingTimeMillis;
-            long remainingSeconds = state.remainingTimeMillis / 1000;
-            player.sendMessage(Text.literal("Vous êtes toujours dans la Safari Zone. Temps restant : " + remainingSeconds + " secondes."), true);
-        }
+                if (state.remainingTimeMillis <= 0) {
+                    teleportPlayerOutOfSafariZone(player, state);
+                } else {
+                    player.sendMessage(Text.literal("Temps restant: " +
+                            TimeUnit.MILLISECONDS.toSeconds(state.remainingTimeMillis) + "s"), true);
+                }
+            } catch (Exception e) {
+                SafariMod.LOGGER.error("Erreur reconnexion joueur", e);
+            }
+        });
     }
 
     private static void teleportPlayerOutOfSafariZone(ServerPlayerEntity player, PlayerSafariState state) {
-        // Récupération de la dimension d'origine
-        ServerWorld originalWorld = player.getServer().getWorld(state.originalDimension);
-
-        if (originalWorld != null) {
-            // Téléportation dans la dimension d'origine
+        try {
+            ServerWorld targetWorld = resolveOriginalWorld(player, state);
             player.teleport(
-                    originalWorld,
+                    targetWorld,
                     state.originalPosition.getX() + 0.5,
                     state.originalPosition.getY(),
                     state.originalPosition.getZ() + 0.5,
                     player.getYaw(),
                     player.getPitch()
             );
-            player.sendMessage(Text.literal("Temps de la Safari Zone écoulé. Vous avez été téléporté à votre position initiale."), true);
-        } else {
-            // Si la dimension d'origine n'existe pas, utilisez la dimension actuelle
-            player.sendMessage(Text.literal("Erreur : Impossible de trouver la dimension d'origine. Téléportation annulée."), true);
+            playerStates.remove(player.getUuid());
+            PlayerStateManager.forceSavePlayerStates();
+        } catch (Exception e) {
+            SafariMod.LOGGER.error("Échec téléportation", e);
+            player.sendMessage(Text.literal("Erreur téléportation"), false);
+        }
+    }
+
+    private static ServerWorld resolveOriginalWorld(ServerPlayerEntity player, PlayerSafariState state) {
+        // Essai avec la dimension sauvegardée
+        if (state.originalDimension != null) {
+            ServerWorld world = player.getServer().getWorld(state.originalDimension);
+            if (world != null) return world;
         }
 
-        playerStates.remove(player.getUuid());
+        // Fallback avec l'ID de dimension
+        if (state.originalDimensionId != null) {
+            Identifier dimId = Identifier.tryParse(state.originalDimensionId);
+            if (dimId != null) {
+                RegistryKey<World> worldKey = RegistryKey.of(
+                        RegistryKey.ofRegistry(Identifier.of("minecraft", "dimension")),
+                        dimId
+                );
+                ServerWorld world = player.getServer().getWorld(worldKey);
+                if (world != null) return world;
+            }
+        }
+
+        // Dernier recours
+        return player.getServer().getOverworld();
     }
 
-    private static boolean isInSafariZone(ServerPlayerEntity player, SafariZoneData zoneData) {
-        BlockPos pos = player.getBlockPos();
-        return pos.getX() >= zoneData.bounds.minX &&
-                pos.getX() <= zoneData.bounds.maxX &&
-                pos.getY() >= zoneData.bounds.minY &&
-                pos.getY() <= zoneData.bounds.maxY &&
-                pos.getZ() >= zoneData.bounds.minZ &&
-                pos.getZ() <= zoneData.bounds.maxZ;
-    }
-
-    /**
-     * Récupère le ServerWorld correspondant à l'identifiant de la dimension.
-     *
-     * @param dimensionId l'identifiant de la dimension, par exemple "minecraft:overworld"
-     * @return le ServerWorld correspondant ou null si introuvable
-     */
-    private static ServerWorld getWorldByDimension(String dimensionId) {
-        if (serverInstance == null) return null;
-
-        Identifier dimIdentifier = Identifier.of(dimensionId);
-        RegistryKey<World> worldKey = RegistryKey.of(RegistryKey.ofRegistry(Identifier.of("minecraft", "dimension")), dimIdentifier);
-        return serverInstance.getWorld(worldKey);
-    }
-
-
-
-    private static ServerPlayerEntity getPlayerById(UUID playerUUID) {
-        if (serverInstance == null) return null;
-        return serverInstance.getPlayerManager().getPlayer(playerUUID);
-    }
-
-    // Classe encapsulant les données d'une Safari Zone
+    /* Classes internes */
     public static class SafariZoneData {
         public final BlockPos spawnPosition;
         public final int durationMinutes;
         public final double cost;
         public final Bounds bounds;
-        public final String dimensionId; // Champ pour la dimension
+        public final String dimensionId;
 
-        public SafariZoneData(BlockPos spawnPosition, int durationMinutes, double cost, Bounds bounds, String dimensionId) {
-            this.spawnPosition = spawnPosition;
-            this.durationMinutes = durationMinutes;
+        public SafariZoneData(BlockPos pos, int duration, double cost, Bounds bounds, String dimId) {
+            this.spawnPosition = pos;
+            this.durationMinutes = duration;
             this.cost = cost;
             this.bounds = bounds;
-            this.dimensionId = dimensionId;
+            this.dimensionId = dimId;
         }
 
         public static class Bounds {
-            public final int minX;
-            public final int maxX;
-            public final int minY;
-            public final int maxY;
-            public final int minZ;
-            public final int maxZ;
-
+            public final int minX, maxX, minY, maxY, minZ, maxZ;
             public Bounds(int minX, int maxX, int minY, int maxY, int minZ, int maxZ) {
-                this.minX = minX;
-                this.maxX = maxX;
-                this.minY = minY;
-                this.maxY = maxY;
-                this.minZ = minZ;
-                this.maxZ = maxZ;
+                this.minX = minX; this.maxX = maxX;
+                this.minY = minY; this.maxY = maxY;
+                this.minZ = minZ; this.maxZ = maxZ;
             }
         }
     }
 
-    // Classe qui maintient l'état d'un joueur dans une Safari Zone
     public static class PlayerSafariState {
         public final BlockPos originalPosition;
-        public final RegistryKey<World> originalDimension; // Nouvelle dimension d'origine
+        public transient RegistryKey<World> originalDimension;
+        public final String originalDimensionId;
         public final int zoneId;
         public long remainingTimeMillis;
         public Long logoutTimeMillis;
 
-        public PlayerSafariState(BlockPos originalPosition, RegistryKey<World> originalDimension, int zoneId, long remainingTimeMillis) {
-            this.originalPosition = originalPosition;
-            this.originalDimension = originalDimension; // Sauvegarde de la dimension d'origine
-            this.zoneId = zoneId;
-            this.remainingTimeMillis = remainingTimeMillis;
+        public PlayerSafariState(BlockPos pos, RegistryKey<World> dim, int zone, long time) {
+            this.originalPosition = pos;
+            this.originalDimension = dim;
+            this.originalDimensionId = dim != null ? dim.getValue().toString() : null;
+            this.zoneId = zone;
+            this.remainingTimeMillis = time;
         }
+
+        public boolean isValid() {
+            return originalPosition != null &&
+                    originalDimensionId != null &&
+                    remainingTimeMillis > 0 &&
+                    safariZones.containsKey(zoneId);
+        }
+    }
+
+    /* Getters/Setters */
+    public static void setServerInstance(MinecraftServer server) {
+        serverInstance = server;
+    }
+
+    public static void setZones(Map<Integer, SafariZoneData> zones) {
+        safariZones.clear();
+        safariZones.putAll(zones);
+    }
+
+    public static boolean isInSafariZone(ServerPlayerEntity player, SafariZoneData zone) {
+        BlockPos pos = player.getBlockPos();
+        return pos.getX() >= zone.bounds.minX && pos.getX() <= zone.bounds.maxX &&
+                pos.getY() >= zone.bounds.minY && pos.getY() <= zone.bounds.maxY &&
+                pos.getZ() >= zone.bounds.minZ && pos.getZ() <= zone.bounds.maxZ;
     }
 }
