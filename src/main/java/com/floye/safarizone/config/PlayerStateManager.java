@@ -1,10 +1,13 @@
 package com.floye.safarizone.config;
 
 import com.floye.safarizone.SafariMod;
+import com.floye.safarizone.util.BlockPosAdapter;
 import com.floye.safarizone.util.SafariZoneManager;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.google.gson.reflect.TypeToken;
+import net.minecraft.util.math.BlockPos;
+
 import java.io.File;
 import java.io.FileReader;
 import java.io.FileWriter;
@@ -19,6 +22,7 @@ public class PlayerStateManager {
     private static final Gson GSON = new GsonBuilder()
             .setPrettyPrinting()
             .excludeFieldsWithModifiers(java.lang.reflect.Modifier.TRANSIENT)
+            .registerTypeAdapter(BlockPos.class, new BlockPosAdapter()) // Register BlockPos adapter
             .create();
     private static final Type TYPE = new TypeToken<Map<UUID, SafariZoneManager.PlayerSafariState>>() {}.getType();
 
