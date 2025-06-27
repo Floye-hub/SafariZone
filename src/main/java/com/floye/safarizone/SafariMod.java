@@ -24,7 +24,7 @@ public class SafariMod implements ModInitializer {
 		});
 
 		ServerLifecycleEvents.SERVER_STARTED.register(server -> {
-			int cleaned = SafariZoneManager.validatePlayerStates();
+			int cleaned = SafariZoneManager.cleanInvalidStates();
 			LOGGER.info("{} états joueurs invalides nettoyés", cleaned);
 		});
 

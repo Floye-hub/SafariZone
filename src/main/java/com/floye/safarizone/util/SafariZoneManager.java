@@ -54,7 +54,7 @@ public class SafariZoneManager {
     private static void startSaveTask() {
         scheduler.scheduleAtFixedRate(() -> {
             try {
-                PlayerStateManager.savePlayerStates(playerStates);
+                PlayerStateManager.savePlayerStates(getPlayerStates());
             } catch (Exception e) {
                 SafariMod.LOGGER.error("Erreur sauvegarde planifiée", e);
             }
@@ -289,5 +289,9 @@ public class SafariZoneManager {
         return pos.getX() >= zone.bounds.minX && pos.getX() <= zone.bounds.maxX &&
                 pos.getY() >= zone.bounds.minY && pos.getY() <= zone.bounds.maxY &&
                 pos.getZ() >= zone.bounds.minZ && pos.getZ() <= zone.bounds.maxZ;
+    }
+
+    public static Map<UUID, PlayerSafariState> getPlayerStates() {
+        return playerStates;
     }
 }

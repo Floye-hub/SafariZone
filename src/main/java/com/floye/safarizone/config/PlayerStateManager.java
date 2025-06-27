@@ -52,6 +52,6 @@ public class PlayerStateManager {
     }
 
     public static void forceSavePlayerStates() {
-        savePlayerStates(SafariZoneManager.playerStates);
+        savePlayerStates(SafariZoneManager.getPlayerStates());
     }
 }
